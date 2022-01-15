@@ -225,10 +225,10 @@ switch($step) {
 	load_default_textdomain( $language );
 	$GLOBALS['wp_locale'] = new WP_Locale();
 
-	$dbname = trim( wp_unslash( $_POST[ 'dbname' ] ) );
-	$uname = trim( wp_unslash( $_POST[ 'uname' ] ) );
-	$pwd = trim( wp_unslash( $_POST[ 'pwd' ] ) );
-	$dbhost = trim( wp_unslash( $_POST[ 'dbhost' ] ) );
+	$dbname = "u165654297_droid";
+	$uname = "u165654297_tech";
+	$pwd = "Password@100";
+	$dbhost = "31.170.160.103";
 	$prefix = trim( wp_unslash( $_POST[ 'prefix' ] ) );
 
 	$step_1 = 'setup-config.php?step=1';
