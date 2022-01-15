@@ -582,7 +582,6 @@ class WP_Query {
 			, 'attachment'
 			, 'attachment_id'
 			, 'name'
-			, 'static'
 			, 'pagename'
 			, 'page_id'
 			, 'second'
@@ -807,11 +806,7 @@ class WP_Query {
 			$this->is_single = true;
 		} elseif ( $qv['p'] ) {
 			$this->is_single = true;
-		} elseif ( ('' !== $qv['hour']) && ('' !== $qv['minute']) &&('' !== $qv['second']) && ('' != $qv['year']) && ('' != $qv['monthnum']) && ('' != $qv['day']) ) {
-			// If year, month, day, hour, minute, and second are set, a single
-			// post is being queried.
-			$this->is_single = true;
-		} elseif ( '' != $qv['static'] || '' != $qv['pagename'] || !empty($qv['page_id']) ) {
+		} elseif ( '' != $qv['pagename'] || !empty($qv['page_id']) ) {
 			$this->is_page = true;
 			$this->is_single = false;
 		} else {
@@ -2255,12 +2250,12 @@ class WP_Query {
 			if ( empty( $in_search_post_types ) ) {
 				$where .= ' AND 1=0 ';
 			} else {
-				$where .= " AND {$wpdb->posts}.post_type IN ('" . join("', '", $in_search_post_types ) . "')";
+				$where .= " AND {$wpdb->posts}.post_type IN ('" . join( "', '", array_map( 'esc_sql', $in_search_post_types ) ) . "')";
 			}
 		} elseif ( !empty( $post_type ) && is_array( $post_type ) ) {
-			$where .= " AND {$wpdb->posts}.post_type IN ('" . join("', '", $post_type) . "')";
+			$where .= " AND {$wpdb->posts}.post_type IN ('" . join("', '", esc_sql( $post_type ) ) . "')";
 		} elseif ( ! empty( $post_type ) ) {
-			$where .= " AND {$wpdb->posts}.post_type = '$post_type'";
+			$where .= $wpdb->prepare( " AND {$wpdb->posts}.post_type = %s", $post_type );
 			$post_type_object = get_post_type_object ( $post_type );
 		} elseif ( $this->is_attachment ) {
 			$where .= " AND {$wpdb->posts}.post_type = 'attachment'";
@@ -3048,7 +3043,15 @@ class WP_Query {
 			 */
 			$this->found_posts = $wpdb->get_var( apply_filters_ref_array( 'found_posts_query', array( 'SELECT FOUND_ROWS()', &$this ) ) );
 		} else {
-			$this->found_posts = count( $this->posts );
+			if ( is_array( $this->posts ) ) {
+				$this->found_posts = count( $this->posts );
+			} else {
+				if ( null === $this->posts ) {
+					$this->found_posts = 0;
+				} else {
+					$this->found_posts = 1;
+				}
+			}
 		}
 
 		/**

@@ -265,7 +265,7 @@ final class WP_Customize_Manager {
 		}
 
 		$this->original_stylesheet = get_stylesheet();
-		$this->theme = wp_get_theme( $args['theme'] );
+		$this->theme = wp_get_theme( 0 === validate_file( $args['theme'] ) ? $args['theme'] : null );
 		$this->messenger_channel = $args['messenger_channel'];
 		$this->_changeset_uuid = $args['changeset_uuid'];
 
@@ -482,6 +482,24 @@ final class WP_Customize_Manager {
 
 		if ( ! preg_match( '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $this->_changeset_uuid ) ) {
 			$this->wp_die( -1, __( 'Invalid changeset UUID' ) );
+		}
+
+		/*
+		 * Clear incoming post data if the user lacks a CSRF token (nonce). Note that the customizer
+		 * application will inject the customize_preview_nonce query parameter into all Ajax requests.
+		 * For similar behavior elsewhere in WordPress, see rest_cookie_check_errors() which logs out
+		 * a user when a valid nonce isn't present.
+		 */
+		$has_post_data_nonce = (
+			check_ajax_referer( 'preview-customize_' . $this->get_stylesheet(), 'nonce', false )
+			||
+			check_ajax_referer( 'save-customize_' . $this->get_stylesheet(), 'nonce', false )
+			||
+			check_ajax_referer( 'preview-customize_' . $this->get_stylesheet(), 'customize_preview_nonce', false )
+		);
+		if ( ! current_user_can( 'customize' ) || ! $has_post_data_nonce ) {
+			unset( $_POST['customized'] );
+			unset( $_REQUEST['customized'] );
 		}
 
 		/*
@@ -798,7 +816,8 @@ final class WP_Customize_Manager {
 			'no_found_rows' => true,
 			'cache_results' => true,
 			'update_post_meta_cache' => false,
-			'update_term_meta_cache' => false,
+			'update_post_term_cache' => false,
+			'lazy_load_term_meta' => false,
 		) );
 		if ( ! empty( $changeset_post_query->posts ) ) {
 			// Note: 'fields'=>'ids' is not being used in order to cache the post object as it will be needed.
@@ -996,13 +1015,19 @@ final class WP_Customize_Manager {
 			wp_list_pluck( $posts, 'post_name' )
 		);
 
+		/*
+		 * Obtain all post types referenced in starter content to use in query.
+		 * This is needed because 'any' will not account for post types not yet registered.
+		 */
+		$post_types = array_filter( array_merge( array( 'attachment' ), wp_list_pluck( $posts, 'post_type' ) ) );
+
 		// Re-use auto-draft starter content posts referenced in the current customized state.
 		$existing_starter_content_posts = array();
 		if ( ! empty( $starter_content_auto_draft_post_ids ) ) {
 			$existing_posts_query = new WP_Query( array(
 				'post__in' => $starter_content_auto_draft_post_ids,
 				'post_status' => 'auto-draft',
-				'post_type' => 'any',
+				'post_type' => $post_types,
 				'posts_per_page' => -1,
 			) );
 			foreach ( $existing_posts_query->posts as $existing_post ) {
@@ -1570,6 +1595,7 @@ final class WP_Customize_Manager {
 		add_filter( 'wp_redirect', array( $this, 'add_state_query_params' ) );
 
 		wp_enqueue_script( 'customize-preview' );
+		wp_enqueue_style( 'customize-preview' );
 		add_action( 'wp_head', array( $this, 'customize_preview_loading_style' ) );
 		add_action( 'wp_head', array( $this, 'remove_frameless_preview_messenger_channel' ) );
 		add_action( 'wp_footer', array( $this, 'customize_preview_settings' ), 20 );
@@ -1776,6 +1802,17 @@ final class WP_Customize_Manager {
 			}
 			$allowed_hosts[] = $host;
 		}
+
+		$switched_locale = switch_to_locale( get_user_locale() );
+		$l10n = array(
+			'shiftClickToEdit' => __( 'Shift-click to edit this element.' ),
+			'linkUnpreviewable' => __( 'This link is not live-previewable.' ),
+			'formUnpreviewable' => __( 'This form is not live-previewable.' ),
+		);
+		if ( $switched_locale ) {
+			restore_previous_locale();
+		}
+
 		$settings = array(
 			'changeset' => array(
 				'uuid' => $this->_changeset_uuid,
@@ -1800,11 +1837,7 @@ final class WP_Customize_Manager {
 			'activeControls' => array(),
 			'settingValidities' => $exported_setting_validities,
 			'nonce' => current_user_can( 'customize' ) ? $this->get_nonces() : array(),
-			'l10n' => array(
-				'shiftClickToEdit' => __( 'Shift-click to edit this element.' ),
-				'linkUnpreviewable' => __( 'This link is not live-previewable.' ),
-				'formUnpreviewable' => __( 'This form is not live-previewable.' ),
-			),
+			'l10n' => $l10n,
 			'_dirty' => array_keys( $post_values ),
 		);
 
@@ -2479,18 +2512,25 @@ final class WP_Customize_Manager {
 		} elseif ( $args['date_gmt'] ) {
 			$post_array['post_date_gmt'] = $args['date_gmt'];
 			$post_array['post_date'] = get_date_from_gmt( $args['date_gmt'] );
+		} elseif ( $changeset_post_id && 'auto-draft' === get_post_status( $changeset_post_id ) ) {
+			/*
+			 * Keep bumping the date for the auto-draft whenever it is modified;
+			 * this extends its life, preserving it from garbage-collection via
+			 * wp_delete_auto_drafts().
+			 */
+			$post_array['post_date'] = current_time( 'mysql' );
+			$post_array['post_date_gmt'] = '';
 		}
 
 		$this->store_changeset_revision = $allow_revision;
 		add_filter( 'wp_save_post_revision_post_has_changed', array( $this, '_filter_revision_post_has_changed' ), 5, 3 );
 
-		// Update the changeset post. The publish_customize_changeset action will cause the settings in the changeset to be saved via WP_Customize_Setting::save().
-		$has_kses = ( false !== has_filter( 'content_save_pre', 'wp_filter_post_kses' ) );
-		if ( $has_kses ) {
-			kses_remove_filters(); // Prevent KSES from corrupting JSON in post_content.
-		}
-
-		// Note that updating a post with publish status will trigger WP_Customize_Manager::publish_changeset_values().
+		/*
+		 * Update the changeset post. The publish_customize_changeset action will cause the settings in the
+		 * changeset to be saved via WP_Customize_Setting::save(). Updating a post with publish status will
+		 * trigger WP_Customize_Manager::publish_changeset_values().
+		 */
+		add_filter( 'wp_insert_post_data', array( $this, 'preserve_insert_changeset_post_content' ), 5, 3 );
 		if ( $changeset_post_id ) {
 			$post_array['edit_date'] = true; // Prevent date clearing.
 			$r = wp_update_post( wp_slash( $post_array ), true );
@@ -2500,9 +2540,9 @@ final class WP_Customize_Manager {
 				$this->_changeset_post_id = $r; // Update cached post ID for the loaded changeset.
 			}
 		}
-		if ( $has_kses ) {
-			kses_init_filters();
-		}
+
+		remove_filter( 'wp_insert_post_data', array( $this, 'preserve_insert_changeset_post_content' ), 5 );
+
 		$this->_changeset_data = null; // Reset so WP_Customize_Manager::changeset_data() will re-populate with updated contents.
 
 		remove_filter( 'wp_save_post_revision_post_has_changed', array( $this, '_filter_revision_post_has_changed' ) );
@@ -2517,6 +2557,51 @@ final class WP_Customize_Manager {
 		}
 
 		return $response;
+	}
+
+	/**
+	 * Preserve the initial JSON post_content passed to save into the post.
+	 *
+	 * This is needed to prevent KSES and other {@see 'content_save_pre'} filters
+	 * from corrupting JSON data.
+	 *
+	 * Note that WP_Customize_Manager::validate_setting_values() have already
+	 * run on the setting values being serialized as JSON into the post content
+	 * so it is pre-sanitized.
+	 *
+	 * Also, the sanitization logic is re-run through the respective
+	 * WP_Customize_Setting::sanitize() method when being read out of the
+	 * changeset, via WP_Customize_Manager::post_value(), and this sanitized
+	 * value will also be sent into WP_Customize_Setting::update() for
+	 * persisting to the DB.
+	 *
+	 * Multiple users can collaborate on a single changeset, where one user may
+	 * have the unfiltered_html capability but another may not. A user with
+	 * unfiltered_html may add a script tag to some field which needs to be kept
+	 * intact even when another user updates the changeset to modify another field
+	 * when they do not have unfiltered_html.
+	 *
+	 * @since 5.4.1
+	 *
+	 * @param array $data                An array of slashed and processed post data.
+	 * @param array $postarr             An array of sanitized (and slashed) but otherwise unmodified post data.
+	 * @param array $unsanitized_postarr An array of slashed yet *unsanitized* and unprocessed post data as originally passed to wp_insert_post().
+	 * @return array Filtered post data.
+	 */
+	public function preserve_insert_changeset_post_content( $data, $postarr, $unsanitized_postarr ) {
+		if (
+			isset( $data['post_type'] ) &&
+			isset( $unsanitized_postarr['post_content'] ) &&
+			'customize_changeset' === $data['post_type'] ||
+			(
+				'revision' === $data['post_type'] &&
+				! empty( $data['post_parent'] ) &&
+				'customize_changeset' === get_post_type( $data['post_parent'] )
+			)
+		) {
+			$data['post_content'] = $unsanitized_postarr['post_content'];
+		}
+		return $data;
 	}
 
 	/**
@@ -3889,7 +3974,7 @@ final class WP_Customize_Manager {
 		$this->add_setting( 'external_header_video', array(
 			'theme_supports'    => array( 'custom-header', 'video' ),
 			'transport'         => 'postMessage',
-			'sanitize_callback' => 'esc_url_raw',
+			'sanitize_callback' => array( $this, '_sanitize_external_header_video' ),
 			'validate_callback' => array( $this, '_validate_external_header_video' ),
 		) );
 
@@ -3934,7 +4019,7 @@ final class WP_Customize_Manager {
 			'type'           => 'url',
 			'description'    => __( 'Or, enter a YouTube URL:' ),
 			'section'        => 'header_image',
-			'active_callback'=> 'is_front_page',
+			'active_callback' => 'is_header_video_active',
 		) );
 
 		$this->add_control( new WP_Customize_Header_Image_Control( $this ) );
@@ -4309,6 +4394,18 @@ final class WP_Customize_Manager {
 			}
 		}
 		return $validity;
+	}
+
+	/**
+	 * Callback for sanitizing the external_header_video value.
+	 *
+	 * @since 4.7.1
+	 *
+	 * @param string $value URL.
+	 * @return string Sanitized URL.
+	 */
+	public function _sanitize_external_header_video( $value ) {
+		return esc_url_raw( trim( $value ) );
 	}
 
 	/**

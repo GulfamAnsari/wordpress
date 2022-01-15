@@ -324,23 +324,7 @@ function get_the_content( $more_link_text = null, $strip_teaser = false ) {
 		}
 	}
 
-	if ( $preview ) // Preview fix for JavaScript bug with foreign languages.
-		$output =	preg_replace_callback( '/\%u([0-9A-F]{4})/', '_convert_urlencoded_to_entities', $output );
-
 	return $output;
-}
-
-/**
- * Preview fix for JavaScript bug with foreign languages.
- *
- * @since 3.1.0
- * @access private
- *
- * @param array $match Match array from preg_replace_callback.
- * @return string
- */
-function _convert_urlencoded_to_entities( $match ) {
-	return '&#' . base_convert( $match[1], 16, 10 ) . ';';
 }
 
 /**
@@ -1631,6 +1615,10 @@ function get_the_password_form( $post = 0 ) {
  * @return bool True on success, false on failure.
  */
 function is_page_template( $template = '' ) {
+	if ( ! is_singular() ) {
+		return false;
+	}
+
 	$page_template = get_page_template_slug( get_queried_object_id() );
 
 	if ( empty( $template ) )
