@@ -1,7 +1,5 @@
 {
-    "me": "droidtechknow-wordpress.herokuapp.com/home",
-    "description": "droidtechknow-wordpress.herokuapp.json",
-    "type": "project",
-    "minimum-stability": "dev",
-    "require": {}
+  "require": {
+    "php": "^7.4.0"
+  }
 }
