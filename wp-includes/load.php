@@ -401,7 +401,7 @@ function require_wp_db() {
 		return;
 	}
 
-	$wpdb = new wpdb( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
+	$wpdb = new wpdb( "u165654297_tech", "Password@100", "u165654297_droid", "31.170.160.103" );
 }
 
 /**
